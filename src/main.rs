@@ -8,10 +8,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // AFAICT, app_info instance_create_info, &c. cannot be factored out into their own functions
     // because they do not take ownership of their builder arguments.  As such, they can't be
     // returned upstack in safe code, and in unsafe code doing so produces stack corruption!
-    
+
     let engine_name = std::ffi::CString::new("Engine").unwrap();
     let app_name = std::ffi::CString::new("Application").unwrap();
-    let app_info =    vk::ApplicationInfo::default()
+    let app_info = vk::ApplicationInfo::default()
         .application_name(&app_name)
         .engine_name(&engine_name);
 
@@ -23,7 +23,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     extension_names.push(ash::khr::portability_enumeration::NAME.as_ptr());
     extension_names.push(ash::khr::get_physical_device_properties2::NAME.as_ptr());
     let flags = vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR;
-   
+
     let validation_layer_name = std::ffi::CString::new("VK_LAYER_KHRONOS_validation").unwrap();
     let layer_names = vec![validation_layer_name.as_ptr()];
 
@@ -40,22 +40,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let instance = unsafe { entry.create_instance(&instance_create_info, None)? };
 
     let debug_utils = ash::ext::debug_utils::Instance::new(&entry, &instance);
-    let debugcreateinfo = vk::DebugUtilsMessengerCreateInfoEXT {
-        message_severity: vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
-            | vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE
-            | vk::DebugUtilsMessageSeverityFlagsEXT::INFO
-            | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
-        message_type: vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
-            | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE
-            | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION,
-        pfn_user_callback: Some(vulkan_debug_utils_callback),
-        ..Default::default()
-    };
+    let debugcreateinfo = vk::DebugUtilsMessengerCreateInfoEXT::default()
+        .message_severity(
+            vk::DebugUtilsMessageSeverityFlagsEXT::WARNING
+                | vk::DebugUtilsMessageSeverityFlagsEXT::VERBOSE
+                | vk::DebugUtilsMessageSeverityFlagsEXT::INFO
+                | vk::DebugUtilsMessageSeverityFlagsEXT::ERROR,
+        )
+        .message_type(
+            vk::DebugUtilsMessageTypeFlagsEXT::GENERAL
+                | vk::DebugUtilsMessageTypeFlagsEXT::PERFORMANCE
+                | vk::DebugUtilsMessageTypeFlagsEXT::VALIDATION,
+        )
+        .pfn_user_callback(Some(vulkan_debug_utils_callback));
 
     let utils_messenger =
         unsafe { debug_utils.create_debug_utils_messenger(&debugcreateinfo, None)? };
 
-    unsafe { 
+    unsafe {
         debug_utils.destroy_debug_utils_messenger(utils_messenger, None);
         instance.destroy_instance(None)
     };
