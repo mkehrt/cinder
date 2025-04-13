@@ -1,19 +1,32 @@
 // Followed from https://hoj-senna.github.io/ashen-aetna/
 
-use ash::{vk, Entry};
+use ash::{vk, Entry, Instance};
+use std::ffi::CStr;
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+static ENGINE_NAME: &CStr = c"Engine";
+static APP_NAME: &CStr = c"Application";
+
+static VALIDATION_LAYER_NAME: &CStr = c"VK_LAYER_KHRONOS_validation";
+
+fn main() -> Result<(), vk::Result> {
     let entry = Entry::linked();
 
-    // AFAICT, app_info instance_create_info, &c. cannot be factored out into their own functions
-    // because they do not take ownership of their builder arguments.  As such, they can't be
-    // returned upstack in safe code, and in unsafe code doing so produces stack corruption!
+    let instance: Instance = create_instance(&entry)?;
+    let (debug_utils, debug_utils_messenger) = create_debug_utils_and_messenger(&entry, &instance)?;
+    let physical_device: vk::PhysicalDevice = create_physical_device(&instance)?;
 
-    let engine_name = std::ffi::CString::new("Engine").unwrap();
-    let app_name = std::ffi::CString::new("Application").unwrap();
+    unsafe {
+        debug_utils.destroy_debug_utils_messenger(debug_utils_messenger, None);
+        instance.destroy_instance(None)
+    }
+
+    Ok(())
+}
+
+fn create_instance(entry: &Entry) -> Result<Instance, vk::Result> {
     let app_info = vk::ApplicationInfo::default()
-        .application_name(&app_name)
-        .engine_name(&engine_name);
+        .application_name(&APP_NAME)
+        .engine_name(&ENGINE_NAME);
 
     let mut extension_names = Vec::new();
 
@@ -24,8 +37,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     extension_names.push(ash::khr::get_physical_device_properties2::NAME.as_ptr());
     let flags = vk::InstanceCreateFlags::ENUMERATE_PORTABILITY_KHR;
 
-    let validation_layer_name = std::ffi::CString::new("VK_LAYER_KHRONOS_validation").unwrap();
-    let layer_names = vec![validation_layer_name.as_ptr()];
+    let layer_names = vec![VALIDATION_LAYER_NAME.as_ptr()];
 
     extension_names.push(vk::EXT_DEBUG_UTILS_NAME.as_ptr());
 
@@ -39,6 +51,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let instance = unsafe { entry.create_instance(&instance_create_info, None)? };
 
+    Ok(instance)
+}
+
+fn create_debug_utils_and_messenger(entry: &Entry, instance: &Instance) -> Result<(ash::ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT), vk::Result> {
     let debug_utils = ash::ext::debug_utils::Instance::new(&entry, &instance);
     let debugcreateinfo = vk::DebugUtilsMessengerCreateInfoEXT::default()
         .message_severity(
@@ -54,15 +70,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         )
         .pfn_user_callback(Some(vulkan_debug_utils_callback));
 
-    let utils_messenger =
+    let debug_utils_messenger =
         unsafe { debug_utils.create_debug_utils_messenger(&debugcreateinfo, None)? };
+    Ok((debug_utils, debug_utils_messenger))
+}
 
-    unsafe {
-        debug_utils.destroy_debug_utils_messenger(utils_messenger, None);
-        instance.destroy_instance(None)
-    };
+fn create_physical_device(instance: &Instance) -> Result<vk::PhysicalDevice, vk::Result> {
+    let phys_devs = unsafe { instance.enumerate_physical_devices()? };
+    let physical_device = phys_devs[0];
 
-    Ok(())
+    Ok(physical_device)
 }
 
 unsafe extern "system" fn vulkan_debug_utils_callback(
