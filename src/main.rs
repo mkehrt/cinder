@@ -15,6 +15,8 @@ fn main() -> Result<(), vk::Result> {
     let (debug_utils, debug_utils_messenger) = create_debug_utils_and_messenger(&entry, &instance)?;
     let physical_device: vk::PhysicalDevice = create_physical_device(&instance)?;
     let queue_family_indices = get_queue_family_indices(&instance, &physical_device);
+    let logical_device_and_queues =
+        create_logcal_device(&instance, physical_device, &queue_family_indices)?;
 
     unsafe {
         debug_utils.destroy_debug_utils_messenger(debug_utils_messenger, None);
@@ -128,9 +130,50 @@ fn get_queue_family_indices(
         }
     }
     let queue_family_indices = QueueFamilyIndices {
+        // TODO handle errors and convert to anyhow
         graphics: found_graphics_queue_family_indices[0],
         transfer: found_transfer_queue_family_indices[0],
     };
 
     queue_family_indices
+}
+
+struct LogicalDeviceAndQueues {
+    logical_device: ash::Device,
+    graphics_queue: vk::Queue,
+    transfer_queue: vk::Queue,
+}
+
+fn create_logcal_device(
+    instance: &Instance,
+    physical_device: vk::PhysicalDevice,
+    queue_family_indices: &QueueFamilyIndices,
+) -> Result<LogicalDeviceAndQueues, vk::Result> {
+    let priorities = [1.0f32];
+
+    let graphics_queue_info = vk::DeviceQueueCreateInfo::default()
+        .queue_family_index(queue_family_indices.graphics)
+        .queue_priorities(&priorities);
+    let transfer_queue_info = vk::DeviceQueueCreateInfo::default()
+        .queue_family_index(queue_family_indices.transfer)
+        .queue_priorities(&priorities);
+
+    let queue_infos = vec![graphics_queue_info, transfer_queue_info];
+    let device_create_info = vk::DeviceCreateInfo::default().queue_create_infos(&queue_infos);
+
+    let logical_device =
+        unsafe { instance.create_device(physical_device, &device_create_info, None)? };
+    let graphics_queue =
+        unsafe { logical_device.get_device_queue(queue_family_indices.graphics, 0) };
+    let transfer_queue =
+        unsafe { logical_device.get_device_queue(queue_family_indices.transfer, 0) };
+
+    dbg!(&graphics_queue);
+    dbg!(&transfer_queue);
+
+    Ok(LogicalDeviceAndQueues {
+        logical_device,
+        graphics_queue,
+        transfer_queue,
+    })
 }
