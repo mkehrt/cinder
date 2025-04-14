@@ -14,6 +14,7 @@ fn main() -> Result<(), vk::Result> {
     let instance: Instance = create_instance(&entry)?;
     let (debug_utils, debug_utils_messenger) = create_debug_utils_and_messenger(&entry, &instance)?;
     let physical_device: vk::PhysicalDevice = create_physical_device(&instance)?;
+    let queue_family_indices = get_queue_family_indices(&instance, &physical_device);
 
     unsafe {
         debug_utils.destroy_debug_utils_messenger(debug_utils_messenger, None);
@@ -47,14 +48,15 @@ fn create_instance(entry: &Entry) -> Result<Instance, vk::Result> {
         .enabled_layer_names(&layer_names)
         .flags(flags);
 
-    dbg!(&instance_create_info);
-
     let instance = unsafe { entry.create_instance(&instance_create_info, None)? };
 
     Ok(instance)
 }
 
-fn create_debug_utils_and_messenger(entry: &Entry, instance: &Instance) -> Result<(ash::ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT), vk::Result> {
+fn create_debug_utils_and_messenger(
+    entry: &Entry,
+    instance: &Instance,
+) -> Result<(ash::ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT), vk::Result> {
     let debug_utils = ash::ext::debug_utils::Instance::new(&entry, &instance);
     let debugcreateinfo = vk::DebugUtilsMessengerCreateInfoEXT::default()
         .message_severity(
@@ -93,4 +95,42 @@ unsafe extern "system" fn vulkan_debug_utils_callback(
     let ty = format!("{:?}", message_type).to_lowercase();
     println!("[Debug][{}][{}] {:?}", severity, ty, message);
     vk::FALSE
+}
+
+struct QueueFamilyIndices {
+    graphics: u32,
+    transfer: u32,
+}
+
+fn get_queue_family_indices(
+    instance: &Instance,
+    physical_device: &vk::PhysicalDevice,
+) -> QueueFamilyIndices {
+    let queue_family_properties =
+        unsafe { instance.get_physical_device_queue_family_properties(*physical_device) };
+    dbg!(&queue_family_properties);
+    let mut found_graphics_queue_family_indices: Vec<u32> = Vec::new();
+    let mut found_transfer_queue_family_indices: Vec<u32> = Vec::new();
+    for (index, queue_family_property) in queue_family_properties.iter().enumerate() {
+        if queue_family_property.queue_count > 0
+            && queue_family_property
+                .queue_flags
+                .contains(vk::QueueFlags::GRAPHICS)
+        {
+            found_graphics_queue_family_indices.push(index as u32);
+        }
+        if queue_family_property.queue_count > 0
+            && queue_family_property
+                .queue_flags
+                .contains(vk::QueueFlags::TRANSFER)
+        {
+            found_transfer_queue_family_indices.push(index as u32);
+        }
+    }
+    let queue_family_indices = QueueFamilyIndices {
+        graphics: found_graphics_queue_family_indices[0],
+        transfer: found_transfer_queue_family_indices[0],
+    };
+
+    queue_family_indices
 }
