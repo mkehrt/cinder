@@ -2,19 +2,20 @@
 
 use ash::{vk, Entry, Instance};
 use std::ffi::CStr;
+use anyhow::anyhow;
 
 static ENGINE_NAME: &CStr = c"Engine";
 static APP_NAME: &CStr = c"Application";
 
 static VALIDATION_LAYER_NAME: &CStr = c"VK_LAYER_KHRONOS_validation";
 
-fn main() -> Result<(), vk::Result> {
+fn main() -> Result<(), anyhow::Error> {
     let entry = Entry::linked();
 
     let instance: Instance = create_instance(&entry)?;
     let (debug_utils, debug_utils_messenger) = create_debug_utils_and_messenger(&entry, &instance)?;
     let physical_device: vk::PhysicalDevice = create_physical_device(&instance)?;
-    let queue_family_indices = get_queue_family_indices(&instance, &physical_device);
+    let queue_family_indices = get_queue_family_indices(&instance, &physical_device)?;
     let logical_device_and_queues =
         create_logcal_device(&instance, physical_device, &queue_family_indices)?;
 
@@ -26,7 +27,7 @@ fn main() -> Result<(), vk::Result> {
     Ok(())
 }
 
-fn create_instance(entry: &Entry) -> Result<Instance, vk::Result> {
+fn create_instance(entry: &Entry) -> Result<Instance, anyhow::Error> {
     let app_info = vk::ApplicationInfo::default()
         .application_name(&APP_NAME)
         .engine_name(&ENGINE_NAME);
@@ -58,7 +59,7 @@ fn create_instance(entry: &Entry) -> Result<Instance, vk::Result> {
 fn create_debug_utils_and_messenger(
     entry: &Entry,
     instance: &Instance,
-) -> Result<(ash::ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT), vk::Result> {
+) -> Result<(ash::ext::debug_utils::Instance, vk::DebugUtilsMessengerEXT), anyhow::Error> {
     let debug_utils = ash::ext::debug_utils::Instance::new(&entry, &instance);
     let debugcreateinfo = vk::DebugUtilsMessengerCreateInfoEXT::default()
         .message_severity(
@@ -107,7 +108,7 @@ struct QueueFamilyIndices {
 fn get_queue_family_indices(
     instance: &Instance,
     physical_device: &vk::PhysicalDevice,
-) -> QueueFamilyIndices {
+) -> Result<QueueFamilyIndices, anyhow::Error> {
     let queue_family_properties =
         unsafe { instance.get_physical_device_queue_family_properties(*physical_device) };
     dbg!(&queue_family_properties);
@@ -129,13 +130,21 @@ fn get_queue_family_indices(
             found_transfer_queue_family_indices.push(index as u32);
         }
     }
+    let graphics_queue_family_index = found_graphics_queue_family_indices
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow!("No graphics queue family index found."))?;
+    let transfer_queue_family_index = found_transfer_queue_family_indices
+        .into_iter()
+        .find(|index| *index != graphics_queue_family_index)
+        .ok_or_else(|| anyhow!("No valid transfer queue family index found."))?;
     let queue_family_indices = QueueFamilyIndices {
         // TODO handle errors and convert to anyhow
-        graphics: found_graphics_queue_family_indices[0],
-        transfer: found_transfer_queue_family_indices[0],
+        graphics: graphics_queue_family_index,
+        transfer: transfer_queue_family_index,
     };
 
-    queue_family_indices
+    Ok(queue_family_indices)
 }
 
 struct LogicalDeviceAndQueues {
@@ -148,7 +157,7 @@ fn create_logcal_device(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     queue_family_indices: &QueueFamilyIndices,
-) -> Result<LogicalDeviceAndQueues, vk::Result> {
+) -> Result<LogicalDeviceAndQueues, anyhow::Error> {
     let priorities = [1.0f32];
 
     let graphics_queue_info = vk::DeviceQueueCreateInfo::default()
