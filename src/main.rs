@@ -161,9 +161,15 @@ fn create_logcal_device(
     let transfer_queue_info = vk::DeviceQueueCreateInfo::default()
         .queue_family_index(queue_family_indices.transfer)
         .queue_priorities(&priorities);
-
     let queue_infos = vec![graphics_queue_info, transfer_queue_info];
-    let device_create_info = vk::DeviceCreateInfo::default().queue_create_infos(&queue_infos);
+
+    let extension_names = vec![
+        ash::khr::portability_subset::NAME.as_ptr()
+    ];
+
+    let device_create_info = vk::DeviceCreateInfo::default()
+        .queue_create_infos(&queue_infos)
+        .enabled_extension_names(&extension_names);
 
     let logical_device =
         unsafe { instance.create_device(physical_device, &device_create_info, None)? };
