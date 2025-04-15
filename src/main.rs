@@ -19,15 +19,15 @@ fn main() -> Result<(), anyhow::Error> {
     let instance: Instance = create_instance(&window, &entry)?;
     let (debug_utils, debug_utils_messenger) = create_debug_utils_and_messenger(&entry, &instance)?;
 
+    let surface_instance = ash::khr::surface::Instance::new(&entry, &instance);
+    let surface = create_surface(&entry, &instance, &window)?;
+
     let physical_device: vk::PhysicalDevice = create_physical_device(&instance)?;
-    let queue_family_indices = get_queue_family_indices(&instance, &physical_device)?;
+    let queue_family_indices =
+        get_queue_family_indices(&instance, &physical_device, &surface_instance, &surface)?;
     let logical_device = create_logcal_device(&instance, physical_device, &queue_family_indices)?;
     let queues = get_queues(&logical_device, &queue_family_indices);
 
-    let surface = create_surface(&entry, &instance, &window)?;
-
-    // This seems wrong.
-    let surface_instance = ash::khr::surface::Instance::new(&entry, &instance);
     unsafe {
         surface_instance.destroy_surface(surface, None);
         logical_device.destroy_device(None);
@@ -127,6 +127,8 @@ struct QueueFamilyIndices {
 fn get_queue_family_indices(
     instance: &Instance,
     physical_device: &vk::PhysicalDevice,
+    surface_instance: &ash::khr::surface::Instance,
+    surface: &vk::SurfaceKHR,
 ) -> Result<QueueFamilyIndices, anyhow::Error> {
     let queue_family_properties =
         unsafe { instance.get_physical_device_queue_family_properties(*physical_device) };
@@ -134,10 +136,18 @@ fn get_queue_family_indices(
     let mut found_graphics_queue_family_indices: Vec<u32> = Vec::new();
     let mut found_transfer_queue_family_indices: Vec<u32> = Vec::new();
     for (index, queue_family_property) in queue_family_properties.iter().enumerate() {
+        let surface_support = unsafe {
+            surface_instance.get_physical_device_surface_support(
+                *physical_device,
+                index as u32,
+                *surface,
+            )?
+        };
         if queue_family_property.queue_count > 0
             && queue_family_property
                 .queue_flags
                 .contains(vk::QueueFlags::GRAPHICS)
+            && surface_support
         {
             found_graphics_queue_family_indices.push(index as u32);
         }
