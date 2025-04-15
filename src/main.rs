@@ -16,12 +16,13 @@ fn main() -> Result<(), anyhow::Error> {
     let (debug_utils, debug_utils_messenger) = create_debug_utils_and_messenger(&entry, &instance)?;
     let physical_device: vk::PhysicalDevice = create_physical_device(&instance)?;
     let queue_family_indices = get_queue_family_indices(&instance, &physical_device)?;
-    let logical_device_and_queues =
-        create_logcal_device(&instance, physical_device, &queue_family_indices)?;
+    let logical_device = create_logcal_device(&instance, physical_device, &queue_family_indices)?;
+    let queues = get_queues(&logical_device, &queue_family_indices);
 
     unsafe {
+        logical_device.destroy_device(None);
         debug_utils.destroy_debug_utils_messenger(debug_utils_messenger, None);
-        instance.destroy_instance(None)
+        instance.destroy_instance(None);
     }
 
     Ok(())
@@ -147,17 +148,11 @@ fn get_queue_family_indices(
     Ok(queue_family_indices)
 }
 
-struct LogicalDeviceAndQueues {
-    logical_device: ash::Device,
-    graphics_queue: vk::Queue,
-    transfer_queue: vk::Queue,
-}
-
 fn create_logcal_device(
     instance: &Instance,
     physical_device: vk::PhysicalDevice,
     queue_family_indices: &QueueFamilyIndices,
-) -> Result<LogicalDeviceAndQueues, anyhow::Error> {
+) -> Result<ash::Device, anyhow::Error> {
     let priorities = [1.0f32];
 
     let graphics_queue_info = vk::DeviceQueueCreateInfo::default()
@@ -172,6 +167,19 @@ fn create_logcal_device(
 
     let logical_device =
         unsafe { instance.create_device(physical_device, &device_create_info, None)? };
+
+    Ok(logical_device)
+}
+
+struct Queues {
+    graphics_queue: vk::Queue,
+    transfer_queue: vk::Queue,
+}
+
+fn get_queues(
+    logical_device: &ash::Device,
+    queue_family_indices: &QueueFamilyIndices,
+) -> Queues {
     let graphics_queue =
         unsafe { logical_device.get_device_queue(queue_family_indices.graphics, 0) };
     let transfer_queue =
@@ -180,9 +188,8 @@ fn create_logcal_device(
     dbg!(&graphics_queue);
     dbg!(&transfer_queue);
 
-    Ok(LogicalDeviceAndQueues {
-        logical_device,
+    Queues {
         graphics_queue,
         transfer_queue,
-    })
+    }
 }
