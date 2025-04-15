@@ -1,8 +1,11 @@
 // Followed from https://hoj-senna.github.io/ashen-aetna/
 
-use ash::{vk, Entry, Instance};
-use std::ffi::CStr;
 use anyhow::anyhow;
+use ash::{vk, Entry, Instance};
+use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
+use std::ffi::CStr;
+use winit::event_loop::EventLoop;
+use winit::window::Window;
 
 static ENGINE_NAME: &CStr = c"Engine";
 static APP_NAME: &CStr = c"Application";
@@ -10,16 +13,23 @@ static APP_NAME: &CStr = c"Application";
 static VALIDATION_LAYER_NAME: &CStr = c"VK_LAYER_KHRONOS_validation";
 
 fn main() -> Result<(), anyhow::Error> {
-    let entry = Entry::linked();
+    let window = create_window()?;
 
-    let instance: Instance = create_instance(&entry)?;
+    let entry = Entry::linked();
+    let instance: Instance = create_instance(&window, &entry)?;
     let (debug_utils, debug_utils_messenger) = create_debug_utils_and_messenger(&entry, &instance)?;
+
     let physical_device: vk::PhysicalDevice = create_physical_device(&instance)?;
     let queue_family_indices = get_queue_family_indices(&instance, &physical_device)?;
     let logical_device = create_logcal_device(&instance, physical_device, &queue_family_indices)?;
     let queues = get_queues(&logical_device, &queue_family_indices);
 
+    let surface = create_surface(&entry, &instance, &window)?;
+
+    // This seems wrong.
+    let surface_instance = ash::khr::surface::Instance::new(&entry, &instance);
     unsafe {
+        surface_instance.destroy_surface(surface, None);
         logical_device.destroy_device(None);
         debug_utils.destroy_debug_utils_messenger(debug_utils_messenger, None);
         instance.destroy_instance(None);
@@ -28,7 +38,10 @@ fn main() -> Result<(), anyhow::Error> {
     Ok(())
 }
 
-fn create_instance(entry: &Entry) -> Result<Instance, anyhow::Error> {
+fn create_instance(
+    window: &winit::window::Window,
+    entry: &Entry,
+) -> Result<Instance, anyhow::Error> {
     let app_info = vk::ApplicationInfo::default()
         .application_name(&APP_NAME)
         .engine_name(&ENGINE_NAME);
@@ -45,6 +58,11 @@ fn create_instance(entry: &Entry) -> Result<Instance, anyhow::Error> {
     let layer_names = vec![VALIDATION_LAYER_NAME.as_ptr()];
 
     extension_names.push(vk::EXT_DEBUG_UTILS_NAME.as_ptr());
+
+    let display_handle = window.display_handle()?;
+    let raw_display_handle = display_handle.as_raw();
+    let window_required_extensions = ash_window::enumerate_required_extensions(raw_display_handle)?;
+    extension_names.extend(window_required_extensions);
 
     let instance_create_info = vk::InstanceCreateInfo::default()
         .application_info(&app_info)
@@ -163,9 +181,7 @@ fn create_logcal_device(
         .queue_priorities(&priorities);
     let queue_infos = vec![graphics_queue_info, transfer_queue_info];
 
-    let extension_names = vec![
-        ash::khr::portability_subset::NAME.as_ptr()
-    ];
+    let extension_names = vec![ash::khr::portability_subset::NAME.as_ptr()];
 
     let device_create_info = vk::DeviceCreateInfo::default()
         .queue_create_infos(&queue_infos)
@@ -182,10 +198,7 @@ struct Queues {
     transfer_queue: vk::Queue,
 }
 
-fn get_queues(
-    logical_device: &ash::Device,
-    queue_family_indices: &QueueFamilyIndices,
-) -> Queues {
+fn get_queues(logical_device: &ash::Device, queue_family_indices: &QueueFamilyIndices) -> Queues {
     let graphics_queue =
         unsafe { logical_device.get_device_queue(queue_family_indices.graphics, 0) };
     let transfer_queue =
@@ -198,4 +211,28 @@ fn get_queues(
         graphics_queue,
         transfer_queue,
     }
+}
+
+fn create_window() -> Result<winit::window::Window, anyhow::Error> {
+    let event_loop = EventLoop::new()?;
+    let window = event_loop.create_window(Window::default_attributes())?;
+
+    Ok(window)
+}
+
+fn create_surface(
+    entry: &Entry,
+    instance: &Instance,
+    window: &winit::window::Window,
+) -> Result<vk::SurfaceKHR, anyhow::Error> {
+    let display_handle = window.display_handle()?;
+    let raw_display_handle = display_handle.as_raw();
+    let window_handle = window.window_handle()?;
+    let raw_window_handle = window_handle.as_raw();
+
+    let surface = unsafe {
+        ash_window::create_surface(entry, instance, raw_display_handle, raw_window_handle, None)?
+    };
+
+    Ok(surface)
 }
