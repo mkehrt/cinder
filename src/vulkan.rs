@@ -1,9 +1,11 @@
 // Followed from https://hoj-senna.github.io/ashen-aetna/
 
 use anyhow::anyhow;
-use ash::{vk, Entry, Instance};
+use ash::{Entry, Instance};
+use ash::vk::{self, SubmitInfo2KHR};
 use raw_window_handle::{DisplayHandle, WindowHandle};
 use std::ffi::CStr;
+use ash::khr::swapchain;
 
 static ENGINE_NAME: &CStr = c"Engine";
 static APP_NAME: &CStr = c"Application";
@@ -51,6 +53,9 @@ impl Vulkan {
             &surface_instance,
             &surface,
         )?;
+
+        let swapchain = Self::create_swapchain(&physical_device, &surface)?;
+
         let logical_device =
             Self::create_logcal_device(&instance, physical_device, &queue_family_indices)?;
         let queues = Self::get_queues(&logical_device, &queue_family_indices);
@@ -215,7 +220,10 @@ impl Vulkan {
             .queue_priorities(&priorities);
         let queue_infos = vec![graphics_queue_info, transfer_queue_info];
 
-        let extension_names = vec![ash::khr::portability_subset::NAME.as_ptr()];
+        let extension_names = vec![
+            ash::extensions::khr::Swapchain::name().as_ptr(),
+            ash::khr::portability_subset::NAME.as_ptr(),
+        ];
 
         let device_create_info = vk::DeviceCreateInfo::default()
             .queue_create_infos(&queue_infos)
@@ -266,6 +274,46 @@ impl Vulkan {
 
         Ok(surface)
     }
+}
+
+fn create_swapchain(
+    physical_device: &vk::PhysicalDevice,
+    surface_instance: &ash::khr::surface::Instance,
+    surface: &vk::SurfaceKHR,
+    queue_family_indices: &QueueFamilyIndices,
+) -> Result<(swapchain::Device, vk::SwapchainKHR), anyhow::Error> {
+    let surface_capabilities = unsafe {
+        surface_instance.get_physical_device_surface_capabilities(*physical_device, *surface)
+    }?;
+    let surface_present_modes = unsafe {
+        surface_instance.get_physical_device_surface_present_modes(*physical_device, *surface)
+    }?;
+    let surface_formats_result =
+        unsafe { surface_instance.get_physical_device_surface_formats(*physical_device, *surface) };
+    let surface_formats = surface_formats_result.get_or_else(|| anyhow!("No surface formats found"))?;
+    let surface_format = surface_formats.first().get_or_else(|| anyhow!("No surface format found"))?;
+
+    let queue_families = [queue_family_indices.graphics];
+    let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
+        .surface(*surface)
+        .min_image_count(
+            3.max(surface_capabilities.min_image_count)
+                .min(surface_capabilities.max_image_count),
+        )
+        .image_format(surface_format.format)
+        .image_color_space(surface_format.color_space)
+        .image_extent(surface_capabilities.current_extent)
+        .image_array_layers(1)
+        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+        .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+        .queue_family_indices(&queue_families)
+        .pre_transform(surface_capabilities.current_transform)
+        .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+        .present_mode(vk::PresentModeKHR::FIFO);
+    let swapchain_loader = swapchain::Device::new(&instance, &logical_device);
+    let swapchain = unsafe { swapchain_loader.create_swapchain(&swapchain_create_info, None)? };
+
+    Ok((swapchain_loader, swapchain))
 }
 
 impl Drop for Vulkan {

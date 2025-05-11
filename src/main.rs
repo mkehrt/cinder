@@ -37,7 +37,7 @@ impl ApplicationHandler for Application {
         let raw_window_handle = window
             .window_handle()
             .expect("Failed to get window handle.");
-        
+
         let vulkan = vulkan::Vulkan::new(&raw_display_handle, &raw_window_handle).unwrap(); // Panic should print error.
 
         self.window = Some(window);
