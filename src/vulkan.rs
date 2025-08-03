@@ -1,11 +1,11 @@
 // Followed from https://hoj-senna.github.io/ashen-aetna/
 
 use anyhow::anyhow;
+use ash::khr::swapchain;
+use ash::vk;
 use ash::{Entry, Instance};
-use ash::vk::{self, SubmitInfo2KHR};
 use raw_window_handle::{DisplayHandle, WindowHandle};
 use std::ffi::CStr;
-use ash::khr::swapchain;
 
 static ENGINE_NAME: &CStr = c"Engine";
 static APP_NAME: &CStr = c"Application";
@@ -21,6 +21,7 @@ pub struct Vulkan {
     surface: vk::SurfaceKHR,
     logical_device: ash::Device,
     queues: Queues,
+    swapchain_image_views: Vec<vk::ImageView>,
 }
 
 struct Queues {
@@ -54,11 +55,18 @@ impl Vulkan {
             &surface,
         )?;
 
-        let swapchain = Self::create_swapchain(&physical_device, &surface)?;
-
         let logical_device =
             Self::create_logcal_device(&instance, physical_device, &queue_family_indices)?;
         let queues = Self::get_queues(&logical_device, &queue_family_indices);
+
+        let swapchain_image_views = Self::create_swapchain_image_views(
+            &instance,
+            &physical_device,
+            &logical_device,
+            &surface_instance,
+            &surface,
+            &queue_family_indices,
+        )?;
 
         Ok(Self {
             entry,
@@ -69,6 +77,7 @@ impl Vulkan {
             surface,
             logical_device,
             queues,
+            swapchain_image_views,
         })
     }
 
@@ -221,7 +230,7 @@ impl Vulkan {
         let queue_infos = vec![graphics_queue_info, transfer_queue_info];
 
         let extension_names = vec![
-            ash::extensions::khr::Swapchain::name().as_ptr(),
+            ash::khr::swapchain::NAME.as_ptr(),
             ash::khr::portability_subset::NAME.as_ptr(),
         ];
 
@@ -274,51 +283,86 @@ impl Vulkan {
 
         Ok(surface)
     }
-}
 
-fn create_swapchain(
-    physical_device: &vk::PhysicalDevice,
-    surface_instance: &ash::khr::surface::Instance,
-    surface: &vk::SurfaceKHR,
-    queue_family_indices: &QueueFamilyIndices,
-) -> Result<(swapchain::Device, vk::SwapchainKHR), anyhow::Error> {
-    let surface_capabilities = unsafe {
-        surface_instance.get_physical_device_surface_capabilities(*physical_device, *surface)
-    }?;
-    let surface_present_modes = unsafe {
-        surface_instance.get_physical_device_surface_present_modes(*physical_device, *surface)
-    }?;
-    let surface_formats_result =
-        unsafe { surface_instance.get_physical_device_surface_formats(*physical_device, *surface) };
-    let surface_formats = surface_formats_result.get_or_else(|| anyhow!("No surface formats found"))?;
-    let surface_format = surface_formats.first().get_or_else(|| anyhow!("No surface format found"))?;
+    fn create_swapchain_image_views(
+        instance: &Instance,
+        physical_device: &vk::PhysicalDevice,
+        logical_device: &ash::Device,
+        surface_instance: &ash::khr::surface::Instance,
+        surface: &vk::SurfaceKHR,
+        queue_family_indices: &QueueFamilyIndices,
+    ) -> Result<Vec<vk::ImageView>, anyhow::Error> {
+        let surface_capabilities = unsafe {
+            surface_instance.get_physical_device_surface_capabilities(*physical_device, *surface)
+        }?;
+        let surface_present_modes = unsafe {
+            surface_instance.get_physical_device_surface_present_modes(*physical_device, *surface)
+        }?;
+        let surface_present_mode = surface_present_modes.first().ok_or_else(|| anyhow!("No surface present mode found"))?;
+        let surface_formats_result = unsafe {
+            surface_instance.get_physical_device_surface_formats(*physical_device, *surface)
+        };
+        let surface_formats =
+            surface_formats_result.map_err(|err| anyhow!("No surface formats found: {}", err))?;
+        let surface_format = surface_formats
+            .first()
+            .ok_or_else(|| anyhow!("No surface format found"))?;
 
-    let queue_families = [queue_family_indices.graphics];
-    let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
-        .surface(*surface)
-        .min_image_count(
-            3.max(surface_capabilities.min_image_count)
-                .min(surface_capabilities.max_image_count),
-        )
-        .image_format(surface_format.format)
-        .image_color_space(surface_format.color_space)
-        .image_extent(surface_capabilities.current_extent)
-        .image_array_layers(1)
-        .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
-        .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-        .queue_family_indices(&queue_families)
-        .pre_transform(surface_capabilities.current_transform)
-        .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-        .present_mode(vk::PresentModeKHR::FIFO);
-    let swapchain_loader = swapchain::Device::new(&instance, &logical_device);
-    let swapchain = unsafe { swapchain_loader.create_swapchain(&swapchain_create_info, None)? };
+        let queue_families = [queue_family_indices.graphics];
+        let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
+            .surface(*surface)
+            .min_image_count(
+                3.max(surface_capabilities.min_image_count)
+                    .min(surface_capabilities.max_image_count),
+            )
+            .present_mode(*surface_present_mode)
+            .image_format(surface_format.format)
+            .image_color_space(surface_format.color_space)
+            .image_extent(surface_capabilities.current_extent)
+            .image_array_layers(1)
+            .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
+            .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
+            .queue_family_indices(&queue_families)
+            .pre_transform(surface_capabilities.current_transform)
+            .composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
+            .present_mode(vk::PresentModeKHR::FIFO);
+        let swapchain_loader = swapchain::Device::new(instance, logical_device);
+        let swapchain = unsafe { swapchain_loader.create_swapchain(&swapchain_create_info, None)? };
+        
+        // https://hoj-senna.github.io/ashen-aetna/text/007_Swapchain.html keeps
+        // the swapchain and loader to destroy later, but in the current version
+        // of the API, get_swapchain_images takes ownership of the swapchain,
+        // so I'm not sure what to do here.    
 
-    Ok((swapchain_loader, swapchain))
+        let swapchain_images = unsafe { swapchain_loader.get_swapchain_images(swapchain)? };
+        let mut swapchain_image_views = Vec::with_capacity(swapchain_images.len());
+        for image in &swapchain_images {
+            let subresource_range = vk::ImageSubresourceRange::default()
+                .aspect_mask(vk::ImageAspectFlags::COLOR)
+                .base_mip_level(0)
+                .level_count(1)
+                .base_array_layer(0)
+                .layer_count(1);
+            let image_view_create_info = vk::ImageViewCreateInfo::default()
+                .image(*image)
+                .view_type(vk::ImageViewType::TYPE_2D)
+                .format(vk::Format::B8G8R8A8_UNORM)
+                .subresource_range(subresource_range);
+            let image_view =
+                unsafe { logical_device.create_image_view(&image_view_create_info, None) }?;
+            swapchain_image_views.push(image_view);
+        }
+        Ok(swapchain_image_views)
+    }
 }
 
 impl Drop for Vulkan {
     fn drop(&mut self) {
         unsafe {
+            let image_views = std::mem::take(&mut self.swapchain_image_views);
+            for image_view in image_views {
+                self.logical_device.destroy_image_view(image_view, None);
+            }
             self.surface_instance.destroy_surface(self.surface, None);
             self.logical_device.destroy_device(None);
             self.debug_utils
