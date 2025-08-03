@@ -203,7 +203,11 @@ impl Vulkan {
             .ok_or_else(|| anyhow!("No graphics queue family index found."))?;
         let transfer_queue_family_index = found_transfer_queue_family_indices
             .into_iter()
-            .find(|index| *index != graphics_queue_family_index)
+            // https://hoj-senna.github.io/ashen-aetna/text/005_Queues.html claims that the
+            // graphics and transfer queue families should be different, but I only have one queue
+            // family on my Mac.
+            //.find(|index| *index != graphics_queue_family_index)
+            .next()
             .ok_or_else(|| anyhow!("No valid transfer queue family index found."))?;
         let queue_family_indices = QueueFamilyIndices {
             // TODO handle errors and convert to anyhow
