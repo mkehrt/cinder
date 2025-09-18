@@ -22,6 +22,7 @@ pub struct Vulkan {
     logical_device: ash::Device,
     queues: Queues,
     swapchain_image_views: Vec<vk::ImageView>,
+    render_pass: vk::RenderPass,
 }
 
 struct Queues {
@@ -68,6 +69,13 @@ impl Vulkan {
             &queue_family_indices,
         )?;
 
+        let render_pass = Self::create_render_pass(
+            &logical_device,
+            &physical_device,
+            &surface_instance,
+            &surface,
+        )?;
+
         Ok(Self {
             entry,
             instance,
@@ -78,6 +86,7 @@ impl Vulkan {
             logical_device,
             queues,
             swapchain_image_views,
+            render_pass,
         })
     }
 
@@ -288,6 +297,22 @@ impl Vulkan {
         Ok(surface)
     }
 
+    fn get_surface_format(
+        surface_instance: &ash::khr::surface::Instance,
+        surface: &vk::SurfaceKHR,
+        physical_device: &vk::PhysicalDevice,
+    ) -> Result<vk::SurfaceFormatKHR, anyhow::Error> {
+        let surface_formats_result = unsafe {
+            surface_instance.get_physical_device_surface_formats(*physical_device, *surface)
+        };
+        let surface_formats =
+            surface_formats_result.map_err(|err| anyhow!("No surface formats found: {}", err))?;
+        let surface_format = surface_formats
+            .first()
+            .ok_or_else(|| anyhow!("No surface format found"))?;
+        Ok(*surface_format)
+    }
+
     fn create_swapchain_image_views(
         instance: &Instance,
         physical_device: &vk::PhysicalDevice,
@@ -302,15 +327,11 @@ impl Vulkan {
         let surface_present_modes = unsafe {
             surface_instance.get_physical_device_surface_present_modes(*physical_device, *surface)
         }?;
-        let surface_present_mode = surface_present_modes.first().ok_or_else(|| anyhow!("No surface present mode found"))?;
-        let surface_formats_result = unsafe {
-            surface_instance.get_physical_device_surface_formats(*physical_device, *surface)
-        };
-        let surface_formats =
-            surface_formats_result.map_err(|err| anyhow!("No surface formats found: {}", err))?;
-        let surface_format = surface_formats
+        let surface_present_mode = surface_present_modes
             .first()
-            .ok_or_else(|| anyhow!("No surface format found"))?;
+            .ok_or_else(|| anyhow!("No surface present mode found"))?;
+
+        let surface_format = Self::get_surface_format(surface_instance, surface, physical_device)?;
 
         let queue_families = [queue_family_indices.graphics];
         let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
@@ -332,11 +353,11 @@ impl Vulkan {
             .present_mode(vk::PresentModeKHR::FIFO);
         let swapchain_loader = swapchain::Device::new(instance, logical_device);
         let swapchain = unsafe { swapchain_loader.create_swapchain(&swapchain_create_info, None)? };
-        
+
         // https://hoj-senna.github.io/ashen-aetna/text/007_Swapchain.html keeps
         // the swapchain and loader to destroy later, but in the current version
         // of the API, get_swapchain_images takes ownership of the swapchain,
-        // so I'm not sure what to do here.    
+        // so I'm not sure what to do here.
 
         let swapchain_images = unsafe { swapchain_loader.get_swapchain_images(swapchain)? };
         let mut swapchain_image_views = Vec::with_capacity(swapchain_images.len());
@@ -358,6 +379,60 @@ impl Vulkan {
         }
         Ok(swapchain_image_views)
     }
+
+    fn create_attachments(
+        physical_device: &vk::PhysicalDevice,
+        surface_instance: &ash::khr::surface::Instance,
+        surface: &vk::SurfaceKHR,
+    ) -> Result<Vec<vk::AttachmentDescription>, anyhow::Error> {
+        let surface_format = Self::get_surface_format(surface_instance, surface, physical_device)?;
+        let format = surface_format.format;
+        let attachment = vk::AttachmentDescription::default()
+            .format(format)
+            .load_op(vk::AttachmentLoadOp::CLEAR)
+            .store_op(vk::AttachmentStoreOp::STORE)
+            .stencil_load_op(vk::AttachmentLoadOp::DONT_CARE)
+            .stencil_store_op(vk::AttachmentStoreOp::DONT_CARE)
+            .initial_layout(vk::ImageLayout::UNDEFINED)
+            .final_layout(vk::ImageLayout::PRESENT_SRC_KHR)
+            .samples(vk::SampleCountFlags::TYPE_1);
+
+        let attachments = vec![attachment];
+        Ok(attachments)
+    }
+
+    fn create_render_pass(
+        logical_device: &ash::Device,
+        physical_device: &vk::PhysicalDevice,
+        surface_instance: &ash::khr::surface::Instance,
+        surface: &vk::SurfaceKHR,
+    ) -> Result<vk::RenderPass, anyhow::Error> {
+        let attachments = Self::create_attachments(physical_device, surface_instance, surface)?;
+        let color_attachment_ref = vk::AttachmentReference::default()
+            .attachment(0)
+            .layout(vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL);
+        let attachment_refs = vec![color_attachment_ref];
+        let subpass = vk::SubpassDescription::default()
+            .color_attachments(&attachment_refs)
+            .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS);
+        let dependency = vk::SubpassDependency::default()
+            .src_subpass(vk::SUBPASS_EXTERNAL)
+            .src_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .dst_subpass(0)
+            .dst_stage_mask(vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT)
+            .dst_access_mask(
+                vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+            );
+        let dependencies = vec![dependency];
+        let subpasses = vec![subpass];
+        let render_pass_create_info = vk::RenderPassCreateInfo::default()
+            .attachments(&attachments)
+            .subpasses(&subpasses)
+            .dependencies(&dependencies);
+        let render_pass =
+            unsafe { logical_device.create_render_pass(&render_pass_create_info, None)? };
+        Ok(render_pass)
+    }
 }
 
 impl Drop for Vulkan {
@@ -369,6 +444,8 @@ impl Drop for Vulkan {
             }
             self.surface_instance.destroy_surface(self.surface, None);
             self.logical_device.destroy_device(None);
+            self.logical_device
+                .destroy_render_pass(self.render_pass, None);
             self.debug_utils
                 .destroy_debug_utils_messenger(self.debug_utils_messenger, None);
             self.instance.destroy_instance(None);
