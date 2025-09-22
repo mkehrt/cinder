@@ -23,6 +23,7 @@ pub struct Vulkan {
     queues: Queues,
     swapchain_image_views: Vec<vk::ImageView>,
     render_pass: vk::RenderPass,
+    framebuffers: Vec<vk::Framebuffer>,
 }
 
 struct Queues {
@@ -76,6 +77,15 @@ impl Vulkan {
             &surface,
         )?;
 
+        let framebuffers = Self::create_framebuffers(
+            render_pass,
+            &physical_device,
+            &logical_device,
+            &surface_instance,
+            &surface,
+            &swapchain_image_views,
+        )?;
+
         Ok(Self {
             entry,
             instance,
@@ -87,6 +97,7 @@ impl Vulkan {
             queues,
             swapchain_image_views,
             render_pass,
+            framebuffers,
         })
     }
 
@@ -432,6 +443,34 @@ impl Vulkan {
         let render_pass =
             unsafe { logical_device.create_render_pass(&render_pass_create_info, None)? };
         Ok(render_pass)
+    }
+
+    fn create_framebuffers(
+        render_pass: vk::RenderPass,
+        physical_device: &vk::PhysicalDevice,
+        logical_device: &ash::Device,
+        surface_instance: &ash::khr::surface::Instance,
+        surface: &vk::SurfaceKHR,
+        image_views: &Vec<vk::ImageView>,
+    ) -> Result<Vec<vk::Framebuffer>, vk::Result> {
+        let surface_capabilities = unsafe {
+            surface_instance.get_physical_device_surface_capabilities(*physical_device, *surface)
+        }?;
+        let extent = surface_capabilities.current_extent;
+        let mut framebuffers = Vec::new();
+        for image_view in image_views {
+            let image_view_array = [*image_view];
+            let framebuffer_info = vk::FramebufferCreateInfo::default()
+                .render_pass(render_pass)
+                .attachments(&image_view_array)
+                .width(extent.width)
+                .height(extent.height)
+                .layers(1);
+            let framebuffer =
+                unsafe { logical_device.create_framebuffer(&framebuffer_info, None) }?;
+            framebuffers.push(framebuffer);
+        }
+        Ok(framebuffers)
     }
 }
 
