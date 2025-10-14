@@ -6,6 +6,7 @@ use ash::vk;
 use ash::{Entry, Instance};
 use raw_window_handle::{DisplayHandle, WindowHandle};
 use std::ffi::CStr;
+use vk_shader_macros;
 
 static ENGINE_NAME: &CStr = c"Engine";
 static APP_NAME: &CStr = c"Application";
@@ -21,8 +22,14 @@ pub struct Vulkan {
     surface: vk::SurfaceKHR,
     logical_device: ash::Device,
     queues: Queues,
+    swapchain_loader: swapchain::Device,
+    swapchain: vk::SwapchainKHR,
     swapchain_image_views: Vec<vk::ImageView>,
     render_pass: vk::RenderPass,
+    vertex_shader_module: vk::ShaderModule,
+    fragment_shader_module: vk::ShaderModule,
+    pipeline_layout: vk::PipelineLayout,
+    pipeline: vk::Pipeline,
     framebuffers: Vec<vk::Framebuffer>,
 }
 
@@ -50,6 +57,9 @@ impl Vulkan {
         let surface = Self::create_surface(&entry, &instance, &display_handle, &window_handle)?;
 
         let physical_device: vk::PhysicalDevice = Self::create_physical_device(&instance)?;
+
+        let extent = Self::get_surface_extent(&physical_device, &surface_instance, &surface)?;
+
         let queue_family_indices = Self::get_queue_family_indices(
             &instance,
             &physical_device,
@@ -61,7 +71,7 @@ impl Vulkan {
             Self::create_logcal_device(&instance, physical_device, &queue_family_indices)?;
         let queues = Self::get_queues(&logical_device, &queue_family_indices);
 
-        let swapchain_image_views = Self::create_swapchain_image_views(
+        let (swapchain_loader, swapchain, swapchain_image_views) = Self::create_swapchain_and_image_views(
             &instance,
             &physical_device,
             &logical_device,
@@ -77,13 +87,17 @@ impl Vulkan {
             &surface,
         )?;
 
+        let (vertex_shader_module, fragment_shader_module, pipeline_layout, pipeline) =
+            Self::create_shaders_and_pipeline(&logical_device, &render_pass, &extent)?;
+
         let framebuffers = Self::create_framebuffers(
-            render_pass,
+            &render_pass,
             &physical_device,
             &logical_device,
             &surface_instance,
             &surface,
             &swapchain_image_views,
+            &extent,
         )?;
 
         Ok(Self {
@@ -95,10 +109,27 @@ impl Vulkan {
             surface,
             logical_device,
             queues,
+            swapchain_loader,
+            swapchain,
             swapchain_image_views,
             render_pass,
+            vertex_shader_module,
+            fragment_shader_module,
+            pipeline_layout,
+            pipeline,
             framebuffers,
         })
+    }
+
+    fn get_surface_extent(
+        physical_device: &vk::PhysicalDevice,
+        surface_instance: &ash::khr::surface::Instance,
+        surface: &vk::SurfaceKHR,
+    ) -> Result<vk::Extent2D, anyhow::Error> {
+        let surface_capabilities = unsafe {
+            surface_instance.get_physical_device_surface_capabilities(*physical_device, *surface)
+        }?;
+        Ok(surface_capabilities.current_extent)
     }
 
     fn create_instance(
@@ -324,17 +355,15 @@ impl Vulkan {
         Ok(*surface_format)
     }
 
-    fn create_swapchain_image_views(
+    fn create_swapchain_and_image_views(
         instance: &Instance,
         physical_device: &vk::PhysicalDevice,
         logical_device: &ash::Device,
         surface_instance: &ash::khr::surface::Instance,
         surface: &vk::SurfaceKHR,
         queue_family_indices: &QueueFamilyIndices,
-    ) -> Result<Vec<vk::ImageView>, anyhow::Error> {
-        let surface_capabilities = unsafe {
-            surface_instance.get_physical_device_surface_capabilities(*physical_device, *surface)
-        }?;
+        extent: &vk::Extent2D,
+    ) -> Result<(swapchain::Device, swapchain::Swapchain, Vec<vk::ImageView>), anyhow::Error> {
         let surface_present_modes = unsafe {
             surface_instance.get_physical_device_surface_present_modes(*physical_device, *surface)
         }?;
@@ -343,7 +372,9 @@ impl Vulkan {
             .ok_or_else(|| anyhow!("No surface present mode found"))?;
 
         let surface_format = Self::get_surface_format(surface_instance, surface, physical_device)?;
-
+        let surface_capabilities = unsafe {
+            surface_instance.get_physical_device_surface_capabilities(*physical_device, *surface)
+        }?;
         let queue_families = [queue_family_indices.graphics];
         let swapchain_create_info = vk::SwapchainCreateInfoKHR::default()
             .surface(*surface)
@@ -354,7 +385,7 @@ impl Vulkan {
             .present_mode(*surface_present_mode)
             .image_format(surface_format.format)
             .image_color_space(surface_format.color_space)
-            .image_extent(surface_capabilities.current_extent)
+            .image_extent(extent)
             .image_array_layers(1)
             .image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
             .image_sharing_mode(vk::SharingMode::EXCLUSIVE)
@@ -364,12 +395,6 @@ impl Vulkan {
             .present_mode(vk::PresentModeKHR::FIFO);
         let swapchain_loader = swapchain::Device::new(instance, logical_device);
         let swapchain = unsafe { swapchain_loader.create_swapchain(&swapchain_create_info, None)? };
-
-        // https://hoj-senna.github.io/ashen-aetna/text/007_Swapchain.html keeps
-        // the swapchain and loader to destroy later, but in the current version
-        // of the API, get_swapchain_images takes ownership of the swapchain,
-        // so I'm not sure what to do here.
-
         let swapchain_images = unsafe { swapchain_loader.get_swapchain_images(swapchain)? };
         let mut swapchain_image_views = Vec::with_capacity(swapchain_images.len());
         for image in &swapchain_images {
@@ -388,7 +413,7 @@ impl Vulkan {
                 unsafe { logical_device.create_image_view(&image_view_create_info, None) }?;
             swapchain_image_views.push(image_view);
         }
-        Ok(swapchain_image_views)
+        Ok((swapchain_loader, swapchain, swapchain_image_views))
     }
 
     fn create_attachments(
@@ -452,11 +477,8 @@ impl Vulkan {
         surface_instance: &ash::khr::surface::Instance,
         surface: &vk::SurfaceKHR,
         image_views: &Vec<vk::ImageView>,
+        extent: &vk::Extent2D,
     ) -> Result<Vec<vk::Framebuffer>, vk::Result> {
-        let surface_capabilities = unsafe {
-            surface_instance.get_physical_device_surface_capabilities(*physical_device, *surface)
-        }?;
-        let extent = surface_capabilities.current_extent;
         let mut framebuffers = Vec::new();
         for image_view in image_views {
             let image_view_array = [*image_view];
@@ -472,6 +494,107 @@ impl Vulkan {
         }
         Ok(framebuffers)
     }
+
+    fn create_shaders_and_pipeline(
+        logical_device: &ash::Device,
+        render_pass: &vk::RenderPass,
+        extent: &vk::Extent2D,
+    ) -> Result<(ShaderModule, ShaderModule, PipelineLayout, Pipeline), anyhow::Error> {
+        let vertex_shader_createinfo = vk::ShaderModuleCreateInfo::default()
+            .code(vk_shader_macros::include_glsl!("shaders/shader.vert", kind: vert));
+        let vertex_shader_module =
+            unsafe { logical_device.create_shader_module(&vertexshader_createinfo, None)? };
+        let fragment_shader_createinfo = vk::ShaderModuleCreateInfo::default()
+            .code(vk_shader_macros::include_glsl!("shaders/shader.frag", kind: frag));
+        let fragment_shader_module =
+            unsafe { logical_device.create_shader_module(&fragmentshader_createinfo, None)? };
+
+        let main_function_name = std::ffi::CString::new("main").unwrap();
+        let vertex_shader_stage = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::VERTEX)
+            .module(vertex_shader_module)
+            .name(&main_function_name);
+        let fragment_shader_stage = vk::PipelineShaderStageCreateInfo::default()
+            .stage(vk::ShaderStageFlags::FRAGMENT)
+            .module(fragment_shader_module)
+            .name(&main_function_name);
+        let shader_stages = vec![vertexshader_stage, fragmentshader_stage];
+
+        let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default();
+        let input_assembly_info = vk::PipelineInputAssemblyStateCreateInfo::default()
+            .topology(vk::PrimitiveTopology::POINT_LIST);
+
+        let viewports = [vk::Viewport {
+            x: 0.,
+            y: 0.,
+            width: extent.width as f32,
+            height: extent.height as f32,
+            min_depth: 0.,
+            max_depth: 1.,
+        }];
+        let scissors = [vk::Rect2D {
+            offset: vk::Offset2D { x: 0, y: 0 },
+            extent: extent,
+        }];
+
+        let viewport_info = vk::PipelineViewportStateCreateInfo::default()
+            .viewports(&viewports)
+            .scissors(&scissors);
+
+        let rasterizer_info = vk::PipelineRasterizationStateCreateInfo::builder()
+            .line_width(1.0)
+            .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
+            .cull_mode(vk::CullModeFlags::NONE)
+            .polygon_mode(vk::PolygonMode::FILL);
+
+        let multisampler_info = vk::PipelineMultisampleStateCreateInfo::default()
+            .rasterization_samples(vk::SampleCountFlags::TYPE_1);
+
+        let colourblend_attachments = [vk::PipelineColorBlendAttachmentState::default()
+            .blend_enable(true)
+            .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
+            .dst_color_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .color_blend_op(vk::BlendOp::ADD)
+            .src_alpha_blend_factor(vk::BlendFactor::SRC_ALPHA)
+            .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+            .alpha_blend_op(vk::BlendOp::ADD)
+            .color_write_mask(
+                vk::ColorComponentFlags::R
+                    | vk::ColorComponentFlags::G
+                    | vk::ColorComponentFlags::B
+                    | vk::ColorComponentFlags::A,
+            )];
+        let colourblend_info =
+            vk::PipelineColorBlendStateCreateInfo::default().attachments(&colourblend_attachments);
+
+        let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default();
+        let pipeline_layout =
+            unsafe { logical_device.create_pipeline_layout(&pipelinelayout_info, None) }?;
+
+        let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
+            .stages(&shader_stages)
+            .vertex_input_state(&vertex_input_info)
+            .input_assembly_state(&input_assembly_info)
+            .viewport_state(&viewport_info)
+            .rasterization_state(&rasterizer_info)
+            .multisample_state(&multisampler_info)
+            .color_blend_state(&colourblend_info)
+            .layout(pipeline_layout)
+            .render_pass(*render_pass)
+            .subpass(0);
+        let graphics_pipeline = unsafe {
+            logical_device
+                .create_graphics_pipelines(vk::PipelineCache::null(), &[pipeline_info], None)
+                .expect("A problem with the pipeline creation")
+        }[0];
+
+        Ok((
+            vertex_shader_module,
+            fragment_shader_module,
+            pipeline_layout,
+            graphics_pipeline,
+        ))
+    }
 }
 
 impl Drop for Vulkan {
@@ -481,10 +604,19 @@ impl Drop for Vulkan {
             for image_view in image_views {
                 self.logical_device.destroy_image_view(image_view, None);
             }
+            self.swapchain_loader
+                .destroy_swapchain(self.swapchain, None);
             self.surface_instance.destroy_surface(self.surface, None);
-            self.logical_device.destroy_device(None);
             self.logical_device
                 .destroy_render_pass(self.render_pass, None);
+            self.logical_device
+                .destroy_shader_module(self.vertex_shader_module, None);
+            self.logical_device
+                .destroy_shader_module(self.fragment_shader_module, None);
+            self.logical_device
+                .destroy_pipeline_layout(self.pipeline_layout, None);
+            self.logical_device.destroy_pipeline(self.pipeline, None);
+            self.logical_device.destroy_device(None);
             self.debug_utils
                 .destroy_debug_utils_messenger(self.debug_utils_messenger, None);
             self.instance.destroy_instance(None);

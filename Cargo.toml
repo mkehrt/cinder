@@ -10,3 +10,4 @@ ash-window = "0.13.0"
 raw-window-handle = "0.6.2"
 tokio = { version = "1.44.2", features = [ "macros", "rt-multi-thread", "sync" ] } 
 winit = { version = "0.30.9", features = [ "rwh_05" ] }
+vk-shader-macros = "0.2.11"
