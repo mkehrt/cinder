@@ -78,6 +78,7 @@ impl Vulkan {
             &surface_instance,
             &surface,
             &queue_family_indices,
+            extent,
         )?;
 
         let render_pass = Self::create_render_pass(
@@ -88,16 +89,13 @@ impl Vulkan {
         )?;
 
         let (vertex_shader_module, fragment_shader_module, pipeline_layout, pipeline) =
-            Self::create_shaders_and_pipeline(&logical_device, &render_pass, &extent)?;
+            Self::create_shaders_and_pipeline(&logical_device, &render_pass, extent)?;
 
         let framebuffers = Self::create_framebuffers(
             &render_pass,
-            &physical_device,
             &logical_device,
-            &surface_instance,
-            &surface,
             &swapchain_image_views,
-            &extent,
+            extent,
         )?;
 
         Ok(Self {
@@ -362,8 +360,8 @@ impl Vulkan {
         surface_instance: &ash::khr::surface::Instance,
         surface: &vk::SurfaceKHR,
         queue_family_indices: &QueueFamilyIndices,
-        extent: &vk::Extent2D,
-    ) -> Result<(swapchain::Device, swapchain::Swapchain, Vec<vk::ImageView>), anyhow::Error> {
+        extent: vk::Extent2D,
+    ) -> Result<(swapchain::Device, vk::SwapchainKHR, Vec<vk::ImageView>), anyhow::Error> {
         let surface_present_modes = unsafe {
             surface_instance.get_physical_device_surface_present_modes(*physical_device, *surface)
         }?;
@@ -471,19 +469,16 @@ impl Vulkan {
     }
 
     fn create_framebuffers(
-        render_pass: vk::RenderPass,
-        physical_device: &vk::PhysicalDevice,
+        render_pass: &vk::RenderPass,
         logical_device: &ash::Device,
-        surface_instance: &ash::khr::surface::Instance,
-        surface: &vk::SurfaceKHR,
         image_views: &Vec<vk::ImageView>,
-        extent: &vk::Extent2D,
+        extent: vk::Extent2D,
     ) -> Result<Vec<vk::Framebuffer>, vk::Result> {
         let mut framebuffers = Vec::new();
         for image_view in image_views {
             let image_view_array = [*image_view];
             let framebuffer_info = vk::FramebufferCreateInfo::default()
-                .render_pass(render_pass)
+                .render_pass(*render_pass)
                 .attachments(&image_view_array)
                 .width(extent.width)
                 .height(extent.height)
@@ -498,16 +493,16 @@ impl Vulkan {
     fn create_shaders_and_pipeline(
         logical_device: &ash::Device,
         render_pass: &vk::RenderPass,
-        extent: &vk::Extent2D,
-    ) -> Result<(ShaderModule, ShaderModule, PipelineLayout, Pipeline), anyhow::Error> {
+        extent: vk::Extent2D,
+    ) -> Result<(vk::ShaderModule, vk::ShaderModule, vk::PipelineLayout, vk::Pipeline), anyhow::Error> {
         let vertex_shader_createinfo = vk::ShaderModuleCreateInfo::default()
             .code(vk_shader_macros::include_glsl!("shaders/shader.vert", kind: vert));
         let vertex_shader_module =
-            unsafe { logical_device.create_shader_module(&vertexshader_createinfo, None)? };
+            unsafe { logical_device.create_shader_module(&vertex_shader_createinfo, None)? };
         let fragment_shader_createinfo = vk::ShaderModuleCreateInfo::default()
             .code(vk_shader_macros::include_glsl!("shaders/shader.frag", kind: frag));
         let fragment_shader_module =
-            unsafe { logical_device.create_shader_module(&fragmentshader_createinfo, None)? };
+            unsafe { logical_device.create_shader_module(&fragment_shader_createinfo, None)? };
 
         let main_function_name = std::ffi::CString::new("main").unwrap();
         let vertex_shader_stage = vk::PipelineShaderStageCreateInfo::default()
@@ -518,7 +513,7 @@ impl Vulkan {
             .stage(vk::ShaderStageFlags::FRAGMENT)
             .module(fragment_shader_module)
             .name(&main_function_name);
-        let shader_stages = vec![vertexshader_stage, fragmentshader_stage];
+        let shader_stages = vec![vertex_shader_stage, fragment_shader_stage];
 
         let vertex_input_info = vk::PipelineVertexInputStateCreateInfo::default();
         let input_assembly_info = vk::PipelineInputAssemblyStateCreateInfo::default()
@@ -541,7 +536,7 @@ impl Vulkan {
             .viewports(&viewports)
             .scissors(&scissors);
 
-        let rasterizer_info = vk::PipelineRasterizationStateCreateInfo::builder()
+        let rasterizer_info = vk::PipelineRasterizationStateCreateInfo::default()
             .line_width(1.0)
             .front_face(vk::FrontFace::COUNTER_CLOCKWISE)
             .cull_mode(vk::CullModeFlags::NONE)
@@ -569,7 +564,7 @@ impl Vulkan {
 
         let pipeline_layout_info = vk::PipelineLayoutCreateInfo::default();
         let pipeline_layout =
-            unsafe { logical_device.create_pipeline_layout(&pipelinelayout_info, None) }?;
+            unsafe { logical_device.create_pipeline_layout(&pipeline_layout_info, None) }?;
 
         let pipeline_info = vk::GraphicsPipelineCreateInfo::default()
             .stages(&shader_stages)
@@ -600,6 +595,9 @@ impl Vulkan {
 impl Drop for Vulkan {
     fn drop(&mut self) {
         unsafe {
+            self.framebuffers.iter().for_each(|framebuffer| {
+                self.logical_device.destroy_framebuffer(*framebuffer, None);
+            });
             let image_views = std::mem::take(&mut self.swapchain_image_views);
             for image_view in image_views {
                 self.logical_device.destroy_image_view(image_view, None);
