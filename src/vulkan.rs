@@ -31,6 +31,8 @@ pub struct Vulkan {
     pipeline_layout: vk::PipelineLayout,
     pipeline: vk::Pipeline,
     framebuffers: Vec<vk::Framebuffer>,
+    command_pools: CommandPools,
+    commandbuffers: Vec<vk::CommandBuffer>,
 }
 
 struct Queues {
@@ -41,6 +43,20 @@ struct Queues {
 struct QueueFamilyIndices {
     graphics: u32,
     transfer: u32,
+}
+
+struct CommandPools {
+    command_pool_graphics: vk::CommandPool,
+    command_pool_transfer: vk::CommandPool,
+}
+
+impl CommandPools {
+    fn destroy(&mut self, logical_device: &ash::Device) {
+        unsafe {
+            logical_device.destroy_command_pool(self.command_pool_graphics, None);
+            logical_device.destroy_command_pool(self.command_pool_transfer, None);
+        }
+    }
 }
 
 impl Vulkan {
@@ -71,15 +87,16 @@ impl Vulkan {
             Self::create_logcal_device(&instance, physical_device, &queue_family_indices)?;
         let queues = Self::get_queues(&logical_device, &queue_family_indices);
 
-        let (swapchain_loader, swapchain, swapchain_image_views) = Self::create_swapchain_and_image_views(
-            &instance,
-            &physical_device,
-            &logical_device,
-            &surface_instance,
-            &surface,
-            &queue_family_indices,
-            extent,
-        )?;
+        let (swapchain_loader, swapchain, swapchain_image_views) =
+            Self::create_swapchain_and_image_views(
+                &instance,
+                &physical_device,
+                &logical_device,
+                &surface_instance,
+                &surface,
+                &queue_family_indices,
+                extent,
+            )?;
 
         let render_pass = Self::create_render_pass(
             &logical_device,
@@ -98,6 +115,18 @@ impl Vulkan {
             extent,
         )?;
 
+        let command_pools = Self::create_command_pools(&logical_device, &queue_family_indices)?;
+
+        let commandbuffers =
+            Self::create_commandbuffers(&logical_device, &command_pools, framebuffers.len())?;
+        Self::fill_commandbuffers(
+            &commandbuffers,
+            &logical_device,
+            &render_pass,
+            &framebuffers,
+            extent,
+            &pipeline,
+        )?;
         Ok(Self {
             entry,
             instance,
@@ -116,6 +145,8 @@ impl Vulkan {
             pipeline_layout,
             pipeline,
             framebuffers,
+            command_pools,
+            commandbuffers,
         })
     }
 
@@ -494,7 +525,15 @@ impl Vulkan {
         logical_device: &ash::Device,
         render_pass: &vk::RenderPass,
         extent: vk::Extent2D,
-    ) -> Result<(vk::ShaderModule, vk::ShaderModule, vk::PipelineLayout, vk::Pipeline), anyhow::Error> {
+    ) -> Result<
+        (
+            vk::ShaderModule,
+            vk::ShaderModule,
+            vk::PipelineLayout,
+            vk::Pipeline,
+        ),
+        anyhow::Error,
+    > {
         let vertex_shader_createinfo = vk::ShaderModuleCreateInfo::default()
             .code(vk_shader_macros::include_glsl!("shaders/shader.vert", kind: vert));
         let vertex_shader_module =
@@ -590,11 +629,89 @@ impl Vulkan {
             graphics_pipeline,
         ))
     }
+
+    fn create_command_pools(
+        logical_device: &ash::Device,
+        queue_family_indices: &QueueFamilyIndices,
+    ) -> Result<CommandPools, anyhow::Error> {
+        let graphics_commandpool_info = vk::CommandPoolCreateInfo::default()
+            .queue_family_index(queue_family_indices.graphics)
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+        let command_pool_graphics =
+            unsafe { logical_device.create_command_pool(&graphics_commandpool_info, None) }?;
+        let transfer_commandpool_info = vk::CommandPoolCreateInfo::default()
+            .queue_family_index(queue_family_indices.transfer)
+            .flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER);
+        let command_pool_transfer =
+            unsafe { logical_device.create_command_pool(&transfer_commandpool_info, None) }?;
+
+        Ok(CommandPools {
+            command_pool_graphics,
+            command_pool_transfer,
+        })
+    }
+
+    fn create_commandbuffers(
+        logical_device: &ash::Device,
+        pools: &CommandPools,
+        amount: usize,
+    ) -> Result<Vec<vk::CommandBuffer>, vk::Result> {
+        let commandbuf_allocate_info = vk::CommandBufferAllocateInfo::default()
+            .command_pool(pools.command_pool_graphics)
+            .command_buffer_count(amount as u32);
+        unsafe { logical_device.allocate_command_buffers(&commandbuf_allocate_info) }
+    }
+
+    fn fill_commandbuffers(
+        commandbuffers: &[vk::CommandBuffer],
+        logical_device: &ash::Device,
+        renderpass: &vk::RenderPass,
+        framebuffers: &Vec<vk::Framebuffer>,
+        extent: vk::Extent2D,
+        pipeline: &vk::Pipeline,
+    ) -> Result<(), vk::Result> {
+        for (i, &commandbuffer) in commandbuffers.iter().enumerate() {
+            let commandbuffer_begininfo = vk::CommandBufferBeginInfo::default();
+            unsafe {
+                logical_device.begin_command_buffer(commandbuffer, &commandbuffer_begininfo)?;
+            }
+            let clearvalues = [vk::ClearValue {
+                color: vk::ClearColorValue {
+                    float32: [0.0, 0.0, 0.08, 1.0],
+                },
+            }];
+            let renderpass_begininfo = vk::RenderPassBeginInfo::default()
+                .render_pass(*renderpass)
+                .framebuffer(framebuffers[i])
+                .render_area(vk::Rect2D {
+                    offset: vk::Offset2D { x: 0, y: 0 },
+                    extent: extent,
+                })
+                .clear_values(&clearvalues);
+            unsafe {
+                logical_device.cmd_begin_render_pass(
+                    commandbuffer,
+                    &renderpass_begininfo,
+                    vk::SubpassContents::INLINE,
+                );
+                logical_device.cmd_bind_pipeline(
+                    commandbuffer,
+                    vk::PipelineBindPoint::GRAPHICS,
+                    *pipeline,
+                );
+                logical_device.cmd_draw(commandbuffer, 1, 1, 0, 0);
+                logical_device.cmd_end_render_pass(commandbuffer);
+                logical_device.end_command_buffer(commandbuffer)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Drop for Vulkan {
     fn drop(&mut self) {
         unsafe {
+            self.command_pools.destroy(&self.logical_device);
             self.framebuffers.iter().for_each(|framebuffer| {
                 self.logical_device.destroy_framebuffer(*framebuffer, None);
             });
