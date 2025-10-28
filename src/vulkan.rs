@@ -35,6 +35,7 @@ pub struct Vulkan {
     commandbuffers: Vec<vk::CommandBuffer>,
     semaphores: Semaphores,
     current_image: usize,
+    image_count: usize,
 }
 
 struct Queues {
@@ -70,13 +71,19 @@ struct Semaphores {
 impl Semaphores {
     fn destroy(&mut self, logical_device: &ash::Device) {
         for semaphore in self.image_available.iter() {
-            unsafe { logical_device.destroy_semaphore(*semaphore, None); }
+            unsafe {
+                logical_device.destroy_semaphore(*semaphore, None);
+            }
         }
         for semaphore in self.rendering_finished.iter() {
-            unsafe { logical_device.destroy_semaphore(*semaphore, None); }
+            unsafe {
+                logical_device.destroy_semaphore(*semaphore, None);
+            }
         }
         for fence in self.may_begin_rendering.iter() {
-            unsafe { logical_device.destroy_fence(*fence, None); }
+            unsafe {
+                logical_device.destroy_fence(*fence, None);
+            }
         }
     }
 }
@@ -137,10 +144,12 @@ impl Vulkan {
             extent,
         )?;
 
+        let image_count = framebuffers.len();
+
         let command_pools = Self::create_command_pools(&logical_device, &queue_family_indices)?;
 
         let commandbuffers =
-            Self::create_commandbuffers(&logical_device, &command_pools, framebuffers.len())?;
+            Self::create_commandbuffers(&logical_device, &command_pools, image_count)?;
         Self::fill_commandbuffers(
             &commandbuffers,
             &logical_device,
@@ -150,7 +159,7 @@ impl Vulkan {
             &pipeline,
         )?;
 
-        let semaphores = Self::create_semaphores(&logical_device, framebuffers.len())?;
+        let semaphores = Self::create_semaphores(&logical_device, image_count)?;
 
         Ok(Self {
             entry,
@@ -174,6 +183,7 @@ impl Vulkan {
             commandbuffers,
             semaphores,
             current_image: 0,
+            image_count,
         })
     }
 
@@ -742,10 +752,13 @@ impl Vulkan {
         let mut rendering_finished = Vec::new();
         let semaphore_create_info = vk::SemaphoreCreateInfo::default();
         let mut may_begin_rendering = Vec::new();
-        let fence_create_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
-        for i in 0..amount {
-            let avialable_semaphore = unsafe { logical_device.create_semaphore(&semaphore_create_info, None)? };
-            let rendering_finished_semaphore = unsafe { logical_device.create_semaphore(&semaphore_create_info, None)? };
+        let fence_create_info =
+            vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
+        for _ in 0..amount {
+            let avialable_semaphore =
+                unsafe { logical_device.create_semaphore(&semaphore_create_info, None)? };
+            let rendering_finished_semaphore =
+                unsafe { logical_device.create_semaphore(&semaphore_create_info, None)? };
             image_available.push(avialable_semaphore);
             rendering_finished.push(rendering_finished_semaphore);
             let fence = unsafe { logical_device.create_fence(&fence_create_info, None) }?;
@@ -756,6 +769,59 @@ impl Vulkan {
             rendering_finished,
             may_begin_rendering,
         })
+    }
+
+    pub fn render(&mut self) -> Result<(), vk::Result> {
+        let (image_index, _) = unsafe {
+            self.swapchain_loader.acquire_next_image(
+                self.swapchain,
+                std::u64::MAX,
+                self.semaphores.image_available[self.current_image],
+                vk::Fence::null(),
+            )?
+        };
+        unsafe {
+            self.logical_device
+                .wait_for_fences(
+                    &[self.semaphores.may_begin_rendering[self.current_image]],
+                    true,
+                    std::u64::MAX,
+                )
+                .expect("fence-waiting");
+            self.logical_device
+                .reset_fences(&[self.semaphores.may_begin_rendering[self.current_image]])
+                .expect("resetting fences");
+        }
+        let semaphores_available = [self.semaphores.image_available[self.current_image]];
+        let waiting_stages = [vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT];
+        let semaphores_finished = [self.semaphores.rendering_finished[self.current_image]];
+        let commandbuffers = [self.commandbuffers[image_index as usize]];
+        let submit_info = [vk::SubmitInfo::default()
+            .wait_semaphores(&semaphores_available)
+            .wait_dst_stage_mask(&waiting_stages)
+            .command_buffers(&commandbuffers)
+            .signal_semaphores(&semaphores_finished)];
+        unsafe {
+            self.logical_device
+                .queue_submit(
+                    self.queues.graphics_queue,
+                    &submit_info,
+                    self.semaphores.may_begin_rendering[self.current_image],
+                )
+                .expect("queue submission");
+        };
+        let swapchains = [self.swapchain];
+        let indices = [image_index];
+        let present_info = vk::PresentInfoKHR::default()
+            .wait_semaphores(&semaphores_finished)
+            .swapchains(&swapchains)
+            .image_indices(&indices);
+        unsafe {
+            self.swapchain_loader
+                .queue_present(self.queues.graphics_queue, &present_info)?;
+        };
+        self.current_image = (self.current_image + 1) % self.image_count;
+        Ok(())
     }
 }
 

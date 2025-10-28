@@ -50,6 +50,7 @@ impl ApplicationHandler for Application {
                 event_loop.exit();
             }
             WindowEvent::RedrawRequested => {
+                self.vulkan.as_mut().unwrap().render();
                 self.window.as_ref().unwrap().request_redraw();
             }
             _ => (),
