@@ -33,6 +33,8 @@ pub struct Vulkan {
     framebuffers: Vec<vk::Framebuffer>,
     command_pools: CommandPools,
     commandbuffers: Vec<vk::CommandBuffer>,
+    semaphores: Semaphores,
+    current_image: usize,
 }
 
 struct Queues {
@@ -55,6 +57,26 @@ impl CommandPools {
         unsafe {
             logical_device.destroy_command_pool(self.command_pool_graphics, None);
             logical_device.destroy_command_pool(self.command_pool_transfer, None);
+        }
+    }
+}
+
+struct Semaphores {
+    image_available: Vec<vk::Semaphore>,
+    rendering_finished: Vec<vk::Semaphore>,
+    may_begin_rendering: Vec<vk::Fence>,
+}
+
+impl Semaphores {
+    fn destroy(&mut self, logical_device: &ash::Device) {
+        for semaphore in self.image_available.iter() {
+            unsafe { logical_device.destroy_semaphore(*semaphore, None); }
+        }
+        for semaphore in self.rendering_finished.iter() {
+            unsafe { logical_device.destroy_semaphore(*semaphore, None); }
+        }
+        for fence in self.may_begin_rendering.iter() {
+            unsafe { logical_device.destroy_fence(*fence, None); }
         }
     }
 }
@@ -127,6 +149,9 @@ impl Vulkan {
             extent,
             &pipeline,
         )?;
+
+        let semaphores = Self::create_semaphores(&logical_device, framebuffers.len())?;
+
         Ok(Self {
             entry,
             instance,
@@ -147,6 +172,8 @@ impl Vulkan {
             framebuffers,
             command_pools,
             commandbuffers,
+            semaphores,
+            current_image: 0,
         })
     }
 
@@ -706,11 +733,36 @@ impl Vulkan {
         }
         Ok(())
     }
+
+    fn create_semaphores(
+        logical_device: &ash::Device,
+        amount: usize,
+    ) -> Result<Semaphores, anyhow::Error> {
+        let mut image_available = Vec::new();
+        let mut rendering_finished = Vec::new();
+        let semaphore_create_info = vk::SemaphoreCreateInfo::default();
+        let mut may_begin_rendering = Vec::new();
+        let fence_create_info = vk::FenceCreateInfo::default().flags(vk::FenceCreateFlags::SIGNALED);
+        for i in 0..amount {
+            let avialable_semaphore = unsafe { logical_device.create_semaphore(&semaphore_create_info, None)? };
+            let rendering_finished_semaphore = unsafe { logical_device.create_semaphore(&semaphore_create_info, None)? };
+            image_available.push(avialable_semaphore);
+            rendering_finished.push(rendering_finished_semaphore);
+            let fence = unsafe { logical_device.create_fence(&fence_create_info, None) }?;
+            may_begin_rendering.push(fence);
+        }
+        Ok(Semaphores {
+            image_available,
+            rendering_finished,
+            may_begin_rendering,
+        })
+    }
 }
 
 impl Drop for Vulkan {
     fn drop(&mut self) {
         unsafe {
+            self.semaphores.destroy(&self.logical_device);
             self.command_pools.destroy(&self.logical_device);
             self.framebuffers.iter().for_each(|framebuffer| {
                 self.logical_device.destroy_framebuffer(*framebuffer, None);
