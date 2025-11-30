@@ -9,7 +9,7 @@ mod vulkan;
 
 #[tokio::main]
 async fn main() -> Result<(), anyhow::Error> {
-    let event_loop = EventLoop::new().unwrap();
+    let event_loop = EventLoop::new().expect("Failed to create event loop.");
     event_loop.set_control_flow(ControlFlow::Poll);
 
     let mut app = Application::default();
@@ -38,10 +38,13 @@ impl ApplicationHandler for Application {
             .window_handle()
             .expect("Failed to get window handle.");
 
-        let vulkan = vulkan::Vulkan::new(&raw_display_handle, &raw_window_handle).unwrap(); // Panic should print error.
+        let vulkan = vulkan::Vulkan::new(&raw_display_handle, &raw_window_handle).unwrap();
 
         self.window = Some(window);
         self.vulkan = Some(vulkan);
+
+        // Thanks https://github.com/adrian-afl/vengine-rs/blob/main/src/window/window.rs
+        self.window.as_ref().unwrap().request_redraw();
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
@@ -55,5 +58,7 @@ impl ApplicationHandler for Application {
             }
             _ => (),
         }
+
+        self.window.as_ref().unwrap().request_redraw();
     }
 }

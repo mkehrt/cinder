@@ -14,6 +14,7 @@ static APP_NAME: &CStr = c"Application";
 static VALIDATION_LAYER_NAME: &CStr = c"VK_LAYER_KHRONOS_validation";
 
 pub struct Vulkan {
+    #[allow(unused)]
     entry: Entry,
     instance: Instance,
     debug_utils: ash::ext::debug_utils::Instance,
@@ -40,6 +41,7 @@ pub struct Vulkan {
 
 struct Queues {
     graphics_queue: vk::Queue,
+    #[allow(unused)]
     transfer_queue: vk::Queue,
 }
 
@@ -102,6 +104,12 @@ impl Vulkan {
         let surface = Self::create_surface(&entry, &instance, &display_handle, &window_handle)?;
 
         let physical_device: vk::PhysicalDevice = Self::create_physical_device(&instance)?;
+        let physical_device_properties = unsafe { instance.get_physical_device_properties(physical_device) };
+        let api_version = physical_device_properties.api_version;
+        let major_version = ash::vk::api_version_major(api_version);
+        let minor_version = ash::vk::api_version_minor(api_version);
+        let patch_version = ash::vk::api_version_patch(api_version);
+        println!("Vulkan API version: {}.{}.{}", major_version, minor_version, patch_version); 
 
         let extent = Self::get_surface_extent(&physical_device, &surface_instance, &surface)?;
 
@@ -204,7 +212,8 @@ impl Vulkan {
     ) -> Result<Instance, anyhow::Error> {
         let app_info = vk::ApplicationInfo::default()
             .application_name(&APP_NAME)
-            .engine_name(&ENGINE_NAME);
+            .engine_name(&ENGINE_NAME)
+            .api_version(ash::vk::make_api_version(0, 1, 2, 0));
 
         let mut extension_names = Vec::new();
 
@@ -323,8 +332,8 @@ impl Vulkan {
             // https://hoj-senna.github.io/ashen-aetna/text/005_Queues.html claims that the
             // graphics and transfer queue families should be different, but I only have one queue
             // family on my Mac.
-            //.find(|index| *index != graphics_queue_family_index)
-            .next()
+            .find(|index| *index != graphics_queue_family_index)
+            //.next()
             .ok_or_else(|| anyhow!("No valid transfer queue family index found."))?;
         let queue_family_indices = QueueFamilyIndices {
             // TODO handle errors and convert to anyhow
